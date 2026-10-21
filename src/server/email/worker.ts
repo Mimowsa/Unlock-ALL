@@ -130,10 +130,9 @@ export async function runEmailJobs(
   if (!config) return result;
   const workerToken = randomUUID(),
     now = new Date();
-  await db.emailWorkerLease.upsert({
-    where: { id: "dispatch" },
-    create: { id: "dispatch" },
-    update: {},
+  await db.emailWorkerLease.createMany({
+    data: [{ id: "dispatch" }],
+    skipDuplicates: true,
   });
   const lease = await db.emailWorkerLease.updateMany({
     where: {

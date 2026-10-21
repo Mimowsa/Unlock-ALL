@@ -38,7 +38,8 @@
     "build:vercel": "npm run deploy:check && npm run build",
     "deploy:database": "node --experimental-strip-types scripts/prepare-hosted-database.ts",
     "deploy:bootstrap": "node --experimental-strip-types scripts/bootstrap-hosted-demo.ts",
-    "deploy:verify": "node --experimental-strip-types scripts/verify-hosted-deployment.ts"
+    "deploy:verify": "node --experimental-strip-types scripts/verify-hosted-deployment.ts",
+    "paypal:reference:configure": "node --experimental-strip-types scripts/configure-paypal-reference.ts"
   },
   "dependencies": {
     "@next/env": "16.4.2",

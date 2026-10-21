@@ -7,10 +7,21 @@ export async function GET() {
     return privateJson({
       enabled:
         paypalEnabled() &&
-        !!(await getDatabase().payPalSetting.findUnique({
-          where: { id: "site" },
-          select: { id: true },
-        })),
+        !!(await getDatabase()
+          .payPalSetting.findFirst({
+            where: { id: "site" },
+            select: {
+              activeMerchant: {
+                select: { reportingEnabled: true, transferRecipient: true },
+              },
+            },
+          })
+          .then(
+            (s) =>
+              s?.activeMerchant.reportingEnabled &&
+              !!s.activeMerchant.transferRecipient,
+          )),
+      method: "REFERENCE",
       environment: "sandbox",
     });
   } catch {

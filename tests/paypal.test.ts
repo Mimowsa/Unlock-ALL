@@ -157,3 +157,134 @@ test("PayPal transport uses only Sandbox and stable request IDs without exposing
     globalThis.fetch = original;
   }
 });
+
+import {
+  matchTransfer,
+  transactionReport,
+} from "../src/server/paypal/reporting.ts";
+const expectedTransfer = {
+  reference: "UA-M-" + "A".repeat(24),
+  amountCents: 1290n,
+  createdAt: new Date("2026-10-21T10:00:00Z"),
+  payUntil: new Date("2026-10-21T10:30:00Z"),
+};
+function reportTransaction() {
+  return {
+    transaction_id: "ABC12345678901234",
+    transaction_event_code: "T0000",
+    transaction_status: "S",
+    transaction_initiation_date: "2026-10-21T10:01:00Z",
+    transaction_amount: { currency_code: "EUR", value: "12.90" },
+    transaction_note: expectedTransfer.reference,
+  };
+}
+test("reference payments require the exact note, positive gross amount, EUR and a completed general payment", () => {
+  assert.equal(
+    matchTransfer([reportTransaction()], expectedTransfer).kind,
+    "match",
+  );
+  assert.equal(
+    matchTransfer(
+      [{ ...reportTransaction(), transaction_note: "wrong" }],
+      expectedTransfer,
+    ).kind,
+    "missing",
+  );
+  for (const patch of [
+    { transaction_amount: { currency_code: "EUR", value: "-12.90" } },
+    { transaction_amount: { currency_code: "USD", value: "12.90" } },
+    { transaction_status: "V" },
+    { transaction_event_code: "T0006" },
+    { transaction_initiation_date: "2026-10-21T11:00:00Z" },
+  ])
+    assert.equal(
+      matchTransfer([{ ...reportTransaction(), ...patch }], expectedTransfer)
+        .kind,
+      "review",
+    );
+  assert.equal(
+    matchTransfer(
+      [{ ...reportTransaction(), transaction_status: "P" }],
+      expectedTransfer,
+    ).kind,
+    "pending",
+  );
+});
+test("multiple payments and conflicting duplicate rows require review", () => {
+  const t = reportTransaction();
+  assert.equal(matchTransfer([t, t], expectedTransfer).kind, "match");
+  assert.equal(
+    matchTransfer(
+      [t, { ...t, transaction_id: "OTHER1234567890123" }],
+      expectedTransfer,
+    ).kind,
+    "review",
+  );
+  assert.equal(
+    matchTransfer([t, { ...t, transaction_status: "P" }], expectedTransfer)
+      .kind,
+    "review",
+  );
+});
+test("reporting reads every page from the original authenticated merchant before returning evidence", async () => {
+  let calls = 0;
+  const api = {
+    async request(
+      path: string,
+      _method?: string,
+      _body?: unknown,
+      _id?: string,
+      query?: Readonly<Record<string, string>>,
+    ) {
+      calls++;
+      assert.equal(path, "/v1/reporting/transactions");
+      assert.equal(query?.page, String(calls));
+      return {
+        account_number: "MERCHANT",
+        last_refreshed_datetime: "2026-10-21T11:00:00Z",
+        page: calls,
+        total_pages: 2,
+        total_items: 2,
+        transaction_details: [
+          {
+            transaction_info: {
+              ...reportTransaction(),
+              transaction_id: "TX" + calls,
+            },
+          },
+        ],
+      };
+    },
+  };
+  const r = await transactionReport(
+    api,
+    "MERCHANT",
+    expectedTransfer.createdAt,
+    new Date("2026-10-21T11:00:00Z"),
+  );
+  assert.equal(calls, 2);
+  assert.equal(r.transactions.length, 2);
+});
+for (const fault of ["account", "pagination", "count"])
+  test(`reporting rejects invalid ${fault} instead of authorizing delivery`, async () => {
+    const api = {
+      async request() {
+        return {
+          account_number: fault === "account" ? "FOREIGN" : "MERCHANT",
+          last_refreshed_datetime: "2026-10-21T11:00:00Z",
+          page: 1,
+          total_pages: fault === "pagination" ? 10 : 1,
+          total_items: fault === "count" ? 2 : 1,
+          transaction_details: [{ transaction_info: reportTransaction() }],
+        };
+      },
+    };
+    await assert.rejects(
+      transactionReport(
+        api,
+        "MERCHANT",
+        expectedTransfer.createdAt,
+        new Date("2026-10-21T11:00:00Z"),
+      ),
+    );
+  });

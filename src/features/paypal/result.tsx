@@ -6,6 +6,7 @@ import { useCopy } from "@/i18n/client";
 import { useIdentity } from "@/features/authentication/session-provider";
 import { Button } from "@/components/ui/button";
 import { PageHeading } from "@/components/layout/site-shell";
+import { TransferInstructions } from "./transfer-instructions";
 type Payment = {
   id: string;
   status: string;
@@ -13,6 +14,10 @@ type Payment = {
   approvalUrl: string | null;
   orderId: string | null;
   reference: string | null;
+  method: "REFERENCE" | "CHECKOUT";
+  transferReference: string | null;
+  recipient: string | null;
+  payUntil: string | null;
 };
 export function PayPalResult({ id }: { id: string }) {
   const { user } = useIdentity();
@@ -65,6 +70,15 @@ function Result({ id }: { id: string }) {
     }
   }
   useEffect(() => {
+    if (
+      data?.method !== "REFERENCE" ||
+      ["FULFILLED", "EXPIRED"].includes(data.status)
+    )
+      return;
+    const timer = setInterval(() => void verify(), 65000);
+    return () => clearInterval(timer);
+  }, [data?.method, data?.status]);
+  useEffect(() => {
     let canceled = false;
     refresh().then(() => {
       if (!canceled) void verify();
@@ -102,7 +116,9 @@ function Result({ id }: { id: string }) {
             ? "paypalStopped"
             : review
               ? "paypalReviewTitle"
-              : "paypalPendingTitle",
+              : data?.method === "REFERENCE"
+                ? "transferTitle"
+                : "paypalPendingTitle",
         )}
         description={t("paypalSandboxNote")}
       />
@@ -117,10 +133,24 @@ function Result({ id }: { id: string }) {
                   ? "paypalStoppedText"
                   : review
                     ? "paypalReviewText"
-                    : "paypalPendingText",
+                    : data.method === "REFERENCE"
+                      ? "transferPending"
+                      : "paypalPendingText",
               )}
             </p>
-            {data.reference && (
+            {data.method === "REFERENCE" &&
+              data.recipient &&
+              data.transferReference &&
+              data.payUntil &&
+              !terminal && (
+                <TransferInstructions
+                  recipient={data.recipient}
+                  reference={data.transferReference}
+                  payUntil={data.payUntil}
+                  allowPayment={!review}
+                />
+              )}
+            {data.reference && data.method !== "REFERENCE" && (
               <p className="micro-copy">
                 {t("reference")} : {data.reference}
               </p>
@@ -142,7 +172,7 @@ function Result({ id }: { id: string }) {
             <a href={data.approvalUrl}>{t("paypalResume")}</a>
           </Button>
         )}
-        {data?.status === "APPROVAL_PENDING" && (
+        {data?.status === "APPROVAL_PENDING" && data.method !== "REFERENCE" && (
           <Button
             variant="ghost"
             disabled={busy}

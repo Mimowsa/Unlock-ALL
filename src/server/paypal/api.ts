@@ -15,6 +15,7 @@ export type PayPalAPI = {
     method?: string,
     body?: unknown,
     idempotencyKey?: string,
+    query?: Readonly<Record<string, string>>,
   ) => Promise<unknown>;
 };
 const tokens = new Map<string, { value: string; until: number }>();
@@ -63,25 +64,46 @@ export function paypalAPI(credentials: Credentials): PayPalAPI {
     return data.access_token;
   }
   return {
-    async request(path, method = "GET", body, idempotencyKey) {
+    async request(path, method = "GET", body, idempotencyKey, query) {
       if (!/^\/v[12]\/[a-zA-Z0-9_/-]+$/.test(path))
+        throw new PayPalFailure("PAYPAL_PATH", false);
+      if (
+        query &&
+        (path !== "/v1/reporting/transactions" ||
+          method !== "GET" ||
+          Object.keys(query).some(
+            (k) =>
+              ![
+                "start_date",
+                "end_date",
+                "fields",
+                "page_size",
+                "page",
+              ].includes(k),
+          ))
+      )
         throw new PayPalFailure("PAYPAL_PATH", false);
       const access = await token();
       let response: Response;
       try {
-        response = await fetch(sandboxBase + path, {
-          method,
-          headers: {
-            Authorization: "Bearer " + access,
-            "Content-Type": "application/json",
-            Prefer: "return=representation",
-            ...(idempotencyKey ? { "PayPal-Request-Id": idempotencyKey } : {}),
+        response = await fetch(
+          sandboxBase + path + (query ? "?" + new URLSearchParams(query) : ""),
+          {
+            method,
+            headers: {
+              Authorization: "Bearer " + access,
+              "Content-Type": "application/json",
+              Prefer: "return=representation",
+              ...(idempotencyKey
+                ? { "PayPal-Request-Id": idempotencyKey }
+                : {}),
+            },
+            ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+            signal: AbortSignal.timeout(12000),
+            cache: "no-store",
+            redirect: "error",
           },
-          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-          signal: AbortSignal.timeout(12000),
-          cache: "no-store",
-          redirect: "error",
-        });
+        );
       } catch {
         throw new PayPalFailure("PAYPAL_NETWORK");
       }

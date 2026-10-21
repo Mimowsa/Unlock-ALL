@@ -11,9 +11,27 @@ export async function reconcilePayPalBatch(
 ) {
   const rows = await db.payPalCheckout.findMany({
     where: {
-      status: { in: ["CREATING", "APPROVAL_PENDING", "CAPTURING", "VERIFIED"] },
+      OR: [
+        {
+          status: {
+            in: ["CREATING", "APPROVAL_PENDING", "CAPTURING", "VERIFIED"],
+          },
+        },
+        { method: "REFERENCE", status: "NEEDS_REVIEW" },
+        {
+          method: "REFERENCE",
+          status: "EXPIRED",
+          createdAt: { gt: new Date(Date.now() - 86400000) },
+        },
+      ],
     },
-    select: { id: true, userId: true, status: true, expiresAt: true },
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      expiresAt: true,
+      method: true,
+    },
     orderBy: { updatedAt: "asc" },
     take: Math.max(1, Math.min(5, Math.trunc(limit))),
   });
@@ -22,6 +40,7 @@ export async function reconcilePayPalBatch(
     try {
       if (
         row.expiresAt <= new Date() &&
+        row.method !== "REFERENCE" &&
         ["CREATING", "APPROVAL_PENDING"].includes(row.status)
       )
         await expireCheckout(db, row.id);

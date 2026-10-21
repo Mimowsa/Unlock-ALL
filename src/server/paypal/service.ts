@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { PrismaClient, Prisma } from "../../generated/prisma/client.ts";
 import { orderInput } from "../../validation/orders.ts";
@@ -27,6 +27,7 @@ const line = z.object({
 });
 const snapshotSchema = z.array(line).min(1).max(100);
 export type PayPalOptions = {
+  flow?: "REFERENCE";
   env?: EmailEnv;
   vault?: KeyVaultConfig;
   api?: (merchantId: string) => PayPalAPI;
@@ -42,6 +43,11 @@ function dto(row: Checkout) {
     approvalUrl: row.status === "APPROVAL_PENDING" ? row.approvalUrl : null,
     orderId: row.order?.id ?? null,
     reference: row.paypalOrderId,
+    method: row.method,
+    transferReference: row.transferReference,
+    recipient: row.recipient,
+    payUntil: row.payUntil?.toISOString() ?? null,
+    lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
     environment: "sandbox" as const,
   };
 }
@@ -108,6 +114,23 @@ export async function preparePayPalCheckout(
       });
       if (!setting || setting.activeMerchant.environment !== "sandbox")
         throw new CommerceFailure("paypalUnavailable", 503);
+      if (options.flow === "REFERENCE") {
+        if (
+          !setting.activeMerchant.reportingEnabled ||
+          !z.email().safeParse(setting.activeMerchant.transferRecipient).success
+        )
+          throw new CommerceFailure("paypalUnavailable", 503);
+        if (
+          await tx.payPalCheckout.count({
+            where: {
+              userId,
+              method: "REFERENCE",
+              status: { in: ["APPROVAL_PENDING", "VERIFIED", "NEEDS_REVIEW"] },
+            },
+          })
+        )
+          throw new CommerceFailure("orderConflict", 409);
+      }
       const cart = await lockCart(tx, { userId });
       if (cart.revision !== request.cartRevision)
         throw new CommerceFailure("cartConflict", 409);
@@ -209,6 +232,15 @@ export async function preparePayPalCheckout(
       await tx.payPalCheckout.create({
         data: {
           id: checkoutId,
+          ...(options.flow === "REFERENCE"
+            ? {
+                method: "REFERENCE",
+                status: "APPROVAL_PENDING",
+                transferReference: `UA-M-${randomBytes(12).toString("hex").toUpperCase()}`,
+                recipient: setting.activeMerchant.transferRecipient,
+                payUntil: new Date(Date.now() + 30 * 60000),
+              }
+            : {}),
           userId,
           merchantId: setting.activeMerchantId,
           idempotencyKey: request.idempotencyKey,
@@ -221,7 +253,9 @@ export async function preparePayPalCheckout(
           cartFingerprint: request.cartFingerprint,
           snapshot,
           requestBody: body,
-          expiresAt: new Date(Date.now() + 30 * 60000),
+          expiresAt: new Date(
+            Date.now() + (options.flow === "REFERENCE" ? 240 : 30) * 60000,
+          ),
         },
       });
       const vault = options.vault ?? keyVaultConfig();
@@ -251,7 +285,10 @@ export async function preparePayPalCheckout(
     },
     { maxWait: 10000, timeout: 30000 },
   );
-  return createRemoteOrder(db, userId, id, options);
+  const prepared = await owned(db, userId, id);
+  return prepared.method === "REFERENCE"
+    ? dto(prepared)
+    : createRemoteOrder(db, userId, id, options);
 }
 async function lease(db: PrismaClient, id: string) {
   const token = randomUUID();
@@ -335,6 +372,7 @@ export async function expireCheckout(
     const row = await tx.payPalCheckout.findUniqueOrThrow({ where: { id } });
     if (
       ["CREATING", "APPROVAL_PENDING"].includes(row.status) &&
+      row.method !== "REFERENCE" &&
       !row.captureStartedAt &&
       row.expiresAt <= new Date() &&
       (!row.leaseUntil ||
@@ -511,6 +549,10 @@ export async function reconcilePayPal(
   cancel = false,
 ) {
   let row = await owned(db, userId, id);
+  if (row.method === "REFERENCE") {
+    const { reconcileTransfer } = await import("./transfers.ts");
+    return reconcileTransfer(db, userId, id, options, cancel);
+  }
   if (row.order && row.captureId) {
     const api = apiFor(row, options),
       capture = (await api.request(

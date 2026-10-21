@@ -225,15 +225,59 @@ test("PayPal endpoints reject guests, forged prices, foreign owners and unsigned
   }
 });
 
-test("Sandbox checkout redirects for approval and returns to one persistent key delivery", async ({
+test("reference instructions replace approval redirects and one reported payment delivers keys exactly once", async ({
   page,
 }) => {
   const f = await setup(page);
+  let paid = false,
+    checkoutId = "";
   try {
+    await f.db.payPalMerchant.update({
+      where: { id: f.merchant.id },
+      data: {
+        transferRecipient: "merchant-sandbox@example.test",
+        reportingEnabled: true,
+      },
+    });
+    const options = {
+      ...f.options,
+      flow: "REFERENCE" as const,
+      api: (): PayPalAPI => ({
+        async request(path) {
+          expect(path).toBe("/v1/reporting/transactions");
+          const row = await f.db.payPalCheckout.findUniqueOrThrow({
+            where: { id: checkoutId },
+          });
+          return {
+            account_number: "TESTMERCHANT",
+            last_refreshed_datetime: new Date().toISOString(),
+            page: 1,
+            total_pages: 1,
+            total_items: paid ? 1 : 0,
+            transaction_details: paid
+              ? [
+                  {
+                    transaction_info: {
+                      transaction_id: "TX12345678901234567",
+                      transaction_event_code: "T0000",
+                      transaction_status: "S",
+                      transaction_initiation_date: row.createdAt.toISOString(),
+                      transaction_amount: {
+                        currency_code: "EUR",
+                        value: "12.90",
+                      },
+                      transaction_note: row.transferReference,
+                    },
+                  },
+                ]
+              : [],
+          };
+        },
+      }),
+    };
     await page.route("**/api/paypal/config", (route) =>
       route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ enabled: true, environment: "sandbox" }),
+        json: { enabled: true, method: "REFERENCE", environment: "sandbox" },
       }),
     );
     await page.route("**/api/paypal/checkouts", async (route) => {
@@ -242,87 +286,75 @@ test("Sandbox checkout redirects for approval and returns to one persistent key 
         f.db,
         f.user.id,
         route.request().postDataJSON(),
-        f.options,
+        options,
       );
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ checkout }),
-      });
+      checkoutId = checkout.id;
+      await route.fulfill({ json: { checkout } });
     });
     await page.route("**/api/paypal/checkouts/*", async (route) => {
       if (route.request().method() !== "POST") return route.continue();
-      const checkout = await reconcilePayPal(
-        f.db,
-        f.user.id,
-        f.checkoutId,
-        f.options,
-      );
       await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ checkout }),
+        json: {
+          checkout: await reconcilePayPal(f.db, f.user.id, checkoutId, options),
+        },
       });
     });
-    await page.route(
-      "https://www.sandbox.paypal.com/checkoutnow?token=TEST",
-      (route) =>
-        route.fulfill({
-          contentType: "text/html",
-          body: `<h1>PayPal Sandbox — test</h1><a href="${origin}/fr/commande/paypal/${f.checkoutId}">Approuver le paiement fictif</a>`,
-        }),
-    );
     await page.goto("/fr/commande");
     await page
       .getByRole("textbox", { name: "Nom d’utilisateur Discord" })
       .fill("paypal.demo");
     await page.getByRole("checkbox").check();
-    await page.setViewportSize({ width: 320, height: 900 });
-    await expect(
-      page.getByRole("button", {
-        name: "Tester avec PayPal Sandbox",
-        exact: true,
-      }),
-    ).toBeVisible();
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= innerWidth,
-      ),
-    ).toBe(true);
-    await page.screenshot({
-      path: "/private/tmp/unlock-paypal-checkout-mobile.png",
-      fullPage: true,
-    });
     await page
-      .getByRole("button", { name: "Tester avec PayPal Sandbox", exact: true })
+      .getByRole("button", {
+        name: "Payer par référence · Sandbox",
+        exact: true,
+      })
       .click();
-    await expect(page).toHaveURL(/www\.sandbox\.paypal\.com/);
+    await expect(page).toHaveURL(/\/fr\/commande\/paypal\//);
+    await expect(
+      page.getByRole("heading", { name: "Envoyer votre paiement de test" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("merchant-sandbox@example.test", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("code")).toHaveText(/^UA-M-[A-F0-9]{24}$/);
+    for (const width of [320, 768, 1024, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+    }
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.locator("code").scrollIntoViewIfNeeded();
+    await expect(page.locator("code")).toBeInViewport();
+    await page.screenshot({
+      path: "/private/tmp/unlock-paypal-reference-mobile.png",
+    });
     expect(
       await f.db.keyAssignment.count({ where: { productId: f.product.id } }),
     ).toBe(0);
+    expect(await f.db.keyReservation.count({ where: { checkoutId } })).toBe(1);
     expect(
-      await f.db.keyReservation.count({ where: { checkoutId: f.checkoutId } }),
-    ).toBe(1);
-    f.approve();
+      await f.db.order.count({ where: { paypalCheckoutId: checkoutId } }),
+    ).toBe(0);
+    paid = true;
+    await f.db.payPalCheckout.update({
+      where: { id: checkoutId },
+      data: { lastCheckedAt: null },
+    });
     await page
-      .getByRole("link", { name: "Approuver le paiement fictif" })
+      .getByRole("button", { name: "Vérifier le paiement de test" })
       .click();
     await expect(page).toHaveURL(/\/fr\/confirmation\//);
     await expect(page.locator(".key-row")).toHaveCount(1);
-    await expect(
-      page.getByText("Paiement de test vérifié avec PayPal Sandbox."),
-    ).toBeVisible();
-    expect(f.captured).toBe(1);
-    expect(
-      await f.db.order.count({ where: { paypalCheckoutId: f.checkoutId } }),
-    ).toBe(1);
     await page.reload();
     await expect(page.locator(".key-row")).toHaveCount(1);
     expect(
-      await f.db.keyReservation.count({ where: { checkoutId: f.checkoutId } }),
-    ).toBe(0);
-    await page.screenshot({
-      path: "/private/tmp/unlock-paypal-confirmation-mobile.png",
-      fullPage: true,
-    });
+      await f.db.order.count({ where: { paypalCheckoutId: checkoutId } }),
+    ).toBe(1);
+    expect(f.captured).toBe(0);
   } finally {
     await f.db.$disconnect();
   }
@@ -350,7 +382,7 @@ test("pending Sandbox attempts can be resumed and administrators see account ref
     );
     await page.goto("/fr/compte/commandes");
     await expect(
-      page.getByRole("link", { name: /Continuer sur PayPal Sandbox/ }),
+      page.getByRole("link", { name: /Voir les instructions de paiement/ }),
     ).toBeVisible();
     const context = await browser.newContext(),
       admin = await context.newPage();

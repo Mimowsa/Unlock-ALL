@@ -2884,3 +2884,9 @@ td .text-link {
 }
 
 .paypal-pending { margin-bottom: 24px; }
+
+.transfer-instructions { display: grid; gap: 16px; }
+.transfer-facts { display: grid; gap: 20px; margin: 0; }
+.transfer-facts dt { color: var(--muted); font-size: .875rem; margin-bottom: 8px; }
+.transfer-facts dd { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0; overflow-wrap: anywhere; }
+.transfer-facts code { font-size: .875rem; word-break: break-all; }

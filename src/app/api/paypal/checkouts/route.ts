@@ -13,7 +13,9 @@ export async function POST(request: Request) {
       db = getDatabase();
     await consumeRateLimit(db, "paypal-create", user.id, 15, 900);
     return privateJson({
-      checkout: await preparePayPalCheckout(db, user.id, input),
+      checkout: await preparePayPalCheckout(db, user.id, input, {
+        flow: "REFERENCE",
+      }),
     });
   } catch (error) {
     return catalogError(error);

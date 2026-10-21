@@ -20,7 +20,7 @@ function Pending() {
       {resource.data.checkouts.map((c) => (
         <p key={c.id}>
           <Link className="text-link" href={href(`commande/paypal/${c.id}`)}>
-            {t("paypalResume")} · {money(c.amountCents)}
+            {t("transferResume")} · {money(c.amountCents)}
           </Link>
         </p>
       ))}

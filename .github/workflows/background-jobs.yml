@@ -1,0 +1,33 @@
+name: Suivi des paiements et emails
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: unlock-all-background-jobs
+  cancel-in-progress: false
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CRON_SECRET: ${{ secrets.UNLOCK_ALL_CRON_SECRET }}
+      BASE_URL: https://unlock-all-two.vercel.app
+    steps:
+      - name: Traiter les paiements puis les emails
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${#CRON_SECRET}" -lt 32 ]; then
+            echo 'Le secret du planificateur est absent.'
+            exit 1
+          fi
+          for path in /api/internal/jobs/paypal /api/internal/jobs/emails; do
+            status="$(curl --silent --show-error --max-time 300 --output /dev/null --write-out '%{http_code}' --header "Authorization: Bearer ${CRON_SECRET}" "${BASE_URL}${path}")"
+            if [ "$status" != 200 ]; then
+              echo "Traitement indisponible : HTTP ${status}."
+              exit 1
+            fi
+            echo 'Traitement terminé.'
+          done

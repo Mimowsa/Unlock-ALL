@@ -448,6 +448,8 @@ model PayPalMerchant {
   fingerprint           String               @unique @db.Char(64)
   environment           String               @default("sandbox")
   webhookId             String?
+  transferRecipient     String?
+  reportingEnabled      Boolean              @default(false)
   createdAt             DateTime             @default(now()) @db.Timestamptz(3)
   retiredAt             DateTime?            @db.Timestamptz(3)
   checkouts             PayPalCheckout[]
@@ -463,38 +465,58 @@ model PayPalSetting {
 }
 
 model PayPalCheckout {
-  id               String           @id @default(uuid())
-  userId           String
-  merchantId       String
-  idempotencyKey   String
-  requestHash      String           @db.Char(64)
-  status           String           @default("CREATING")
-  amountCents      BigInt
-  currency         String           @default("EUR")
-  locale           Locale
-  discordUsername  String
-  customerEmail    String
-  cartRevision     Int
-  cartFingerprint  String           @db.Char(64)
-  snapshot         Json
-  requestBody      Json
-  paypalOrderId    String?          @unique
-  captureId        String?          @unique
-  approvalUrl      String?
-  errorCode        String?
-  leaseToken       String?
-  leaseUntil       DateTime?        @db.Timestamptz(3)
-  captureStartedAt DateTime?        @db.Timestamptz(3)
-  expiresAt        DateTime         @db.Timestamptz(3)
-  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime         @updatedAt @db.Timestamptz(3)
-  user             User             @relation(fields: [userId], references: [id], onDelete: Restrict)
-  merchant         PayPalMerchant   @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  order            Order?
-  reservations     KeyReservation[]
+  id                String                 @id @default(uuid())
+  method            String                 @default("CHECKOUT")
+  transferReference String?                @unique
+  recipient         String?
+  payUntil          DateTime?              @db.Timestamptz(3)
+  lastCheckedAt     DateTime?              @db.Timestamptz(3)
+  userId            String
+  merchantId        String
+  idempotencyKey    String
+  requestHash       String                 @db.Char(64)
+  status            String                 @default("CREATING")
+  amountCents       BigInt
+  currency          String                 @default("EUR")
+  locale            Locale
+  discordUsername   String
+  customerEmail     String
+  cartRevision      Int
+  cartFingerprint   String                 @db.Char(64)
+  snapshot          Json
+  requestBody       Json
+  paypalOrderId     String?                @unique
+  captureId         String?                @unique
+  approvalUrl       String?
+  errorCode         String?
+  leaseToken        String?
+  leaseUntil        DateTime?              @db.Timestamptz(3)
+  captureStartedAt  DateTime?              @db.Timestamptz(3)
+  expiresAt         DateTime               @db.Timestamptz(3)
+  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
+  user              User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  merchant          PayPalMerchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  order             Order?
+  reservations      KeyReservation[]
+  receipt           PayPalTransferReceipt?
 
   @@unique([userId, idempotencyKey])
   @@index([status, expiresAt])
+}
+
+model PayPalTransferReceipt {
+  checkoutId    String         @id
+  transactionId String         @unique
+  accountId     String
+  reference     String
+  amountCents   BigInt
+  currency      String
+  eventCode     String
+  status        String
+  paidAt        DateTime       @db.Timestamptz(3)
+  verifiedAt    DateTime       @default(now()) @db.Timestamptz(3)
+  checkout      PayPalCheckout @relation(fields: [checkoutId], references: [id], onDelete: Restrict)
 }
 
 model KeyReservation {

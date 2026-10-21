@@ -1,5 +1,25 @@
 export const messages = {
   fr: {
+    transferInstructions: "Envoyer votre paiement de test",
+    transferHowTo:
+      "Depuis votre compte acheteur Sandbox, envoyez le montant exact au destinataire ci-dessous. Copiez uniquement la référence dans la note du paiement. Pour cet achat, utilisez le type de paiement pour biens et services.",
+    transferRecipient: "Compte PayPal Business destinataire",
+    transferReference: "Référence à mettre dans la note",
+    transferPayBefore: "Envoyer avant (heure de Paris)",
+    transferCopyRecipient: "Copier l’adresse",
+    transferCopyReference: "Copier la référence",
+    transferCopied: "Copié",
+    transferCopyFailed:
+      "Copie indisponible. Sélectionnez le texte et copiez-le manuellement.",
+    transferOpenPaypal: "Ouvrir PayPal Sandbox",
+    transferDelay:
+      "La détection peut prendre jusqu’à trois heures après l’envoi. Les clés restent réservées pendant quatre heures. Une note absente, un montant différent ou un paiement tardif nécessitent une vérification. Ne payez pas une deuxième fois.",
+    transferWindowClosed:
+      "Le délai d’envoi est terminé. N’envoyez plus de paiement pour cette référence. Si vous avez déjà payé, vérifiez cette tentative ou contactez le support.",
+    transferTitle: "Votre paiement par référence.",
+    transferPending:
+      "En attente de détection du paiement. La livraison aura lieu après confirmation du montant et de la référence.",
+    transferResume: "Voir les instructions de paiement",
     orderUncertain:
       "Réponse non confirmée. Réessayez la même commande ou consultez Mes commandes. Aucun doublon ne sera créé.",
     retryOrder: "Réessayer la même commande",
@@ -23,9 +43,9 @@ export const messages = {
       "Si ce compte est actif et autorisé pour les tests, un lien sera envoyé. Vérifiez vos indésirables. Le lien expire après 20 minutes.",
     reserved: "Réservée pour PayPal",
     keyReserved: "Cette clé est réservée pendant une validation PayPal.",
-    paypalTest: "Tester avec PayPal Sandbox",
+    paypalTest: "Payer par référence · Sandbox",
     paypalSandboxNote:
-      "PayPal Sandbox : paiement fictif, aucun argent réel débité. Les clés sont réservées pendant 30 minutes.",
+      "PayPal Sandbox : paiement fictif. Envoyez le montant avec la référence indiquée ; la détection peut prendre jusqu’à trois heures.",
     paypalPendingTitle: "Votre validation PayPal.",
     paypalPendingText:
       "Les clés seront livrées après vérification du paiement de test par le serveur. Vous pouvez reprendre PayPal ou vérifier son résultat.",
@@ -414,6 +434,25 @@ export const messages = {
       "Mot de passe modifié. Vous pouvez maintenant vous reconnecter.",
   },
   en: {
+    transferInstructions: "Send your test payment",
+    transferHowTo:
+      "From your Sandbox buyer account, send the exact amount to the recipient below. Paste only the reference into the payment note. Use the goods and services payment type for this purchase.",
+    transferRecipient: "Recipient PayPal Business account",
+    transferReference: "Reference for the payment note",
+    transferPayBefore: "Send before (Paris time)",
+    transferCopyRecipient: "Copy address",
+    transferCopyReference: "Copy reference",
+    transferCopied: "Copied",
+    transferCopyFailed: "Copy unavailable. Select and copy the text manually.",
+    transferOpenPaypal: "Open PayPal Sandbox",
+    transferDelay:
+      "Detection can take up to three hours after sending. Keys remain reserved for four hours. A missing note, different amount or late payment requires review. Do not pay twice.",
+    transferWindowClosed:
+      "The sending window has closed. Do not send a new payment using this reference. If you already paid, check this attempt or contact support.",
+    transferTitle: "Your payment reference.",
+    transferPending:
+      "Waiting to detect the payment. Keys will be delivered after the amount and reference are confirmed.",
+    transferResume: "View payment instructions",
     orderUncertain:
       "Response not confirmed. Retry the same order or check My orders. No duplicate will be created.",
     retryOrder: "Retry the same order",
@@ -436,9 +475,9 @@ export const messages = {
       "If this account is active and allowed for testing, a link will be sent. Check your spam folder. The link expires after 20 minutes.",
     reserved: "Reserved for PayPal",
     keyReserved: "This key is reserved during PayPal checkout.",
-    paypalTest: "Test with PayPal Sandbox",
+    paypalTest: "Pay by reference · Sandbox",
     paypalSandboxNote:
-      "PayPal Sandbox: fictional payment, no real money charged. Keys are reserved for 30 minutes.",
+      "PayPal Sandbox: fictional payment. Send the amount with the supplied reference; detection can take up to three hours.",
     paypalPendingTitle: "Your PayPal checkout.",
     paypalPendingText:
       "Keys will be delivered after the server verifies the test payment. You can resume PayPal or check the result.",

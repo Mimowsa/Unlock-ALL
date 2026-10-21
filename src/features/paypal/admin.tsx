@@ -17,6 +17,9 @@ export function PayPalAdmin() {
       amountCents: number;
       customerEmail: string;
       paypalOrderId: string | null;
+      method: string;
+      transferReference: string | null;
+      recipient: string | null;
       captureId: string | null;
       errorCode: string | null;
       merchant: { label: string };
@@ -80,9 +83,12 @@ export function PayPalAdmin() {
                     <span className="badge">{p.status}</span>
                     {p.errorCode && <p className="micro-copy">{p.errorCode}</p>}
                   </td>
-                  <td>{p.merchant.label}</td>
                   <td>
-                    {p.paypalOrderId ?? "—"}
+                    {p.merchant.label}
+                    {p.recipient && <p className="micro-copy">{p.recipient}</p>}
+                  </td>
+                  <td>
+                    {p.transferReference ?? p.paypalOrderId ?? "—"}
                     {p.captureId && <p className="micro-copy">{p.captureId}</p>}
                   </td>
                   <td>

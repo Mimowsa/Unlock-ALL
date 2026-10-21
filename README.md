@@ -120,7 +120,7 @@ Le worker doit rester ouvert pour les reprises automatiques sans navigation. Seu
 
 ## PayPal Sandbox — phase 9
 
-Le bouton **Tester avec PayPal Sandbox** réserve les clés, redirige vers PayPal et livre seulement après vérification serveur d’une capture complète du montant et du compte marchand attendus. Les tentatives en attente sont accessibles dans Mes commandes. L’administration dispose d’un écran Paiements PayPal pour le suivi et le rapprochement.
+Le parcours initial réservait les clés puis redirigeait vers PayPal Checkout. Son suivi reste disponible pour les anciennes tentatives. Le nouveau panier utilise un **envoi PayPal Sandbox par référence** : destinataire Business vérifié, montant exact et note unique ; les clés sont livrées après rapprochement serveur via Transaction Search. Voir [la configuration et les limites du nouveau parcours](docs/phase-12.md).
 
 ```bash
 npm run paypal:check
@@ -178,4 +178,4 @@ Les tests couvrent les tailles 320, 768, 1024 et 1440 px, les filtres, le stock 
 
 ## Suite du projet
 
-La phase 10 et l'essai acheteur Sandbox sont validés. La phase 11 prépare Vercel/Neon : images Blob privées, routes de tâches périodiques protégées, contrôles de configuration et scripts opérateur. Voir [les étapes et variables de déploiement](docs/phase-11.md) et `.env.vercel.example`. Les 146 tests automatisés passent ; les connexions aux services distants et la mise en ligne restent à effectuer. Aucun paiement réel n’est activé.
+La maquette est hébergée sur Vercel et Neon, avec les images dans Blob privé. Le parcours PayPal Checkout initial a été essayé en Sandbox. La phase 12 le remplace pour les nouvelles tentatives par [un paiement par référence](docs/phase-12.md), soumis à l’autorisation effective de Transaction Search et à un nouvel essai acheteur Sandbox. Voir aussi [les variables de déploiement](docs/phase-11.md) et `.env.vercel.example`. Aucun paiement réel n’est activé.

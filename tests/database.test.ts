@@ -3020,3 +3020,406 @@ for (const invalid of ["parent host", "capture amount"]) {
     }
   });
 }
+
+async function transferFixture(db: ReturnType<typeof authenticationDatabase>) {
+  const f = await paypalFixture(db);
+  await db.payPalMerchant.update({
+    where: { id: f.merchant.id },
+    data: {
+      transferRecipient: "merchant-sandbox@example.test",
+      reportingEnabled: true,
+    },
+  });
+  const account = await db.payPalMerchant.findUniqueOrThrow({
+    where: { id: f.merchant.id },
+  });
+  const state = {
+    id: "",
+    received: false,
+    calls: 0,
+    reportAccount: account.merchantId,
+    refreshed: new Date(),
+    tamper: null as ((t: any) => void) | null,
+    deny: false,
+  };
+  const options = {
+    ...f.options,
+    flow: "REFERENCE" as const,
+    api: (merchantId: string): PayPalAPI => ({
+      async request(path, method = "GET", _body, _requestId, query) {
+        assert.equal(path, "/v1/reporting/transactions");
+        assert.equal(method, "GET");
+        assert.equal(merchantId, f.merchant.id);
+        state.calls++;
+        if (state.deny) throw new PayPalFailure("PAYPAL_HTTP_403", false);
+        const row = await db.payPalCheckout.findUniqueOrThrow({
+          where: { id: state.id },
+        });
+        assert.ok(query?.start_date);
+        assert.equal(
+          Date.parse(query.start_date),
+          row.createdAt.getTime() - 3 * 3600000 - 60000,
+        );
+        const transaction: any = {
+          transaction_id: "TX" + row.id.replaceAll("-", "").slice(0, 20),
+          transaction_event_code: "T0000",
+          transaction_status: "S",
+          transaction_initiation_date: row.createdAt.toISOString(),
+          transaction_amount: {
+            currency_code: "EUR",
+            value: (Number(row.amountCents) / 100).toFixed(2),
+          },
+          transaction_note: row.transferReference,
+        };
+        state.tamper?.(transaction);
+        return {
+          account_number: state.reportAccount,
+          last_refreshed_datetime: state.refreshed.toISOString(),
+          page: 1,
+          total_pages: 1,
+          total_items: state.received ? 1 : 0,
+          transaction_details: state.received
+            ? [{ transaction_info: transaction }]
+            : [],
+        };
+      },
+    }),
+  };
+  const p = await preparePayPalCheckout(db, f.user.id, f.input, options);
+  state.id = p.id;
+  return {
+    ...f,
+    options,
+    state,
+    p,
+    async recheck() {
+      await db.payPalCheckout.update({
+        where: { id: state.id },
+        data: { lastCheckedAt: null },
+      });
+      return reconcilePayPal(db, f.user.id, state.id, options);
+    },
+  };
+}
+test("manual reference preparation creates no remote order and only reporting evidence can deliver keys once", async () => {
+  const db = authenticationDatabase();
+  try {
+    const f = await transferFixture(db);
+    assert.equal(f.state.calls, 0);
+    assert.equal(f.p.method, "REFERENCE");
+    assert.match(f.p.transferReference!, /^UA-M-[A-F0-9]{24}$/);
+    assert.equal(f.p.approvalUrl, null);
+    assert.equal(
+      (await preparePayPalCheckout(db, f.user.id, f.input, f.options)).id,
+      f.p.id,
+    );
+    assert.equal(
+      await db.keyReservation.count({ where: { checkoutId: f.p.id } }),
+      2,
+    );
+    await assert.rejects(
+      db.payPalCheckout.update({
+        where: { id: f.p.id },
+        data: { status: "VERIFIED", captureId: "FORGED" },
+      }),
+    );
+    assert.equal((await f.recheck()).orderId, null);
+    f.state.received = true;
+    const result = await f.recheck();
+    assert.equal(result.status, "FULFILLED");
+    assert.ok(result.orderId);
+    assert.equal(
+      await db.payPalTransferReceipt.count({ where: { checkoutId: f.p.id } }),
+      1,
+    );
+    assert.equal(
+      await db.keyAssignment.count({ where: { productId: f.product.id } }),
+      2,
+    );
+    assert.equal((await f.recheck()).orderId, result.orderId);
+    await assert.rejects(
+      db.payPalTransferReceipt.delete({ where: { checkoutId: f.p.id } }),
+    );
+    await assert.rejects(
+      db.payPalCheckout.update({
+        where: { id: f.p.id },
+        data: { transferReference: "UA-M-" + "B".repeat(24) },
+      }),
+    );
+  } finally {
+    await db.$disconnect();
+  }
+});
+for (const mismatch of [
+  "amount",
+  "currency",
+  "pending",
+  "note",
+  "late",
+  "type",
+])
+  test(`manual reference ${mismatch} never delivers keys`, async () => {
+    const db = authenticationDatabase();
+    try {
+      const f = await transferFixture(db);
+      f.state.received = true;
+      f.state.tamper = (t) => {
+        if (mismatch === "amount") t.transaction_amount.value = "0.01";
+        if (mismatch === "currency") t.transaction_amount.currency_code = "USD";
+        if (mismatch === "pending") t.transaction_status = "P";
+        if (mismatch === "note") t.transaction_note = "wrong";
+        if (mismatch === "late")
+          t.transaction_initiation_date = new Date(
+            Date.now() + 3600000,
+          ).toISOString();
+        if (mismatch === "type") t.transaction_event_code = "T0300";
+      };
+      const result = await f.recheck();
+      assert.equal(result.orderId, null);
+      assert.equal(
+        await db.keyAssignment.count({ where: { productId: f.product.id } }),
+        0,
+      );
+      assert.equal(
+        await db.keyReservation.count({ where: { checkoutId: f.p.id } }),
+        2,
+      );
+    } finally {
+      await db.$disconnect();
+    }
+  });
+test("reference transfers reject wrong reporting accounts and revoked permissions without freeing stock", async () => {
+  const db = authenticationDatabase();
+  try {
+    const f = await transferFixture(db);
+    f.state.received = true;
+    f.state.reportAccount = "FOREIGN";
+    await assert.rejects(f.recheck());
+    assert.equal(
+      await db.payPalTransferReceipt.count({ where: { checkoutId: f.p.id } }),
+      0,
+    );
+    f.state.reportAccount = (
+      await db.payPalMerchant.findUniqueOrThrow({
+        where: { id: f.merchant.id },
+      })
+    ).merchantId;
+    f.state.deny = true;
+    await assert.rejects(f.recheck());
+    assert.equal(
+      (
+        await db.payPalMerchant.findUniqueOrThrow({
+          where: { id: f.merchant.id },
+        })
+      ).reportingEnabled,
+      false,
+    );
+    assert.equal(
+      await db.keyReservation.count({ where: { checkoutId: f.p.id } }),
+      2,
+    );
+  } finally {
+    await db.$disconnect();
+  }
+});
+test("reference recipient and original credentials stay pinned across a Business account change", async () => {
+  const db = authenticationDatabase();
+  try {
+    const f = await transferFixture(db);
+    await activateMerchant(
+      db,
+      {
+        clientId: "another-app-" + randomUUID(),
+        secret: "another-secret-" + randomUUID(),
+      },
+      "ANOTHERMERCHANT",
+      "New account",
+      vault,
+    );
+    assert.equal(
+      (await readPayPalCheckout(db, f.user.id, f.p.id)).recipient,
+      "merchant-sandbox@example.test",
+    );
+    f.state.received = true;
+    assert.equal((await f.recheck()).status, "FULFILLED");
+  } finally {
+    await db.$disconnect();
+  }
+});
+test("manual transfers cannot be canceled or expired while reporting may still be delayed", async () => {
+  const db = authenticationDatabase();
+  try {
+    const f = await transferFixture(db);
+    await assert.rejects(
+      reconcilePayPal(db, f.user.id, f.p.id, f.options, true),
+    );
+    await expireCheckout(db, f.p.id);
+    assert.equal(
+      await db.keyReservation.count({ where: { checkoutId: f.p.id } }),
+      2,
+    );
+    assert.equal(
+      (await readPayPalCheckout(db, f.user.id, f.p.id)).status,
+      "APPROVAL_PENDING",
+    );
+  } finally {
+    await db.$disconnect();
+  }
+});
+test("a previously consumed PayPal transaction cannot satisfy a second reference payment", async () => {
+  const db = authenticationDatabase();
+  try {
+    const first = await transferFixture(db);
+    first.state.received = true;
+    await first.recheck();
+    const receipt = await db.payPalTransferReceipt.findUniqueOrThrow({
+      where: { checkoutId: first.p.id },
+    });
+    const second = await transferFixture(db);
+    second.state.received = true;
+    second.state.tamper = (t) => {
+      t.transaction_id = receipt.transactionId;
+    };
+    const result = await second.recheck();
+    assert.equal(result.status, "NEEDS_REVIEW");
+    assert.equal(
+      await db.keyAssignment.count({ where: { productId: second.product.id } }),
+      0,
+    );
+  } finally {
+    await db.$disconnect();
+  }
+});
+
+test("an expired reference reservation is released only after a complete fresh report shows no matching payment", async () => {
+  const db = authenticationDatabase();
+  try {
+    const f = await transferFixture(db),
+      old = await db.payPalCheckout.findUniqueOrThrow({
+        where: { id: f.p.id },
+      });
+    const keys = await db.keyReservation.findMany({
+      where: { checkoutId: old.id },
+    });
+    await db.$transaction(async (tx) => {
+      await tx.payPalCheckout.update({
+        where: { id: old.id },
+        data: { status: "CANCELED" },
+      });
+      await tx.keyReservation.deleteMany({ where: { checkoutId: old.id } });
+    });
+    const id = randomUUID(),
+      createdAt = new Date(Date.now() - 5 * 3600000),
+      payUntil = new Date(createdAt.getTime() + 30 * 60000),
+      expiresAt = new Date(createdAt.getTime() + 4 * 3600000);
+    await db.payPalCheckout.create({
+      data: {
+        ...old,
+        id,
+        idempotencyKey: randomUUID(),
+        status: "APPROVAL_PENDING",
+        transferReference:
+          "UA-M-" + randomBytes(12).toString("hex").toUpperCase(),
+        createdAt,
+        payUntil,
+        expiresAt,
+        snapshot: old.snapshot as any,
+        requestBody: old.requestBody as any,
+      },
+    });
+    for (const k of keys)
+      await db.keyReservation.create({ data: { ...k, checkoutId: id } });
+    f.state.id = id;
+    f.state.refreshed = createdAt;
+    await f.recheck();
+    assert.equal(
+      await db.keyReservation.count({ where: { checkoutId: id } }),
+      2,
+    );
+    f.state.refreshed = new Date();
+    const result = await f.recheck();
+    assert.equal(result.status, "EXPIRED");
+    assert.equal(
+      await db.keyReservation.count({ where: { checkoutId: id } }),
+      0,
+    );
+  } finally {
+    await db.$disconnect();
+  }
+});
+
+test("a delivery failure retains verified reference evidence and resumes without a new payment search", async () => {
+  const db = authenticationDatabase();
+  let installed = false;
+  try {
+    const f = await transferFixture(db);
+    f.state.received = true;
+    await admin.query(
+      `CREATE FUNCTION test_reference_delivery_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."productId"='${f.product.id}' AND NEW."unitIndex"=2 THEN RAISE EXCEPTION 'test rollback'; END IF; RETURN NEW; END $$`,
+    );
+    await admin.query(
+      'CREATE TRIGGER test_reference_delivery_failure BEFORE INSERT ON "KeyAssignment" FOR EACH ROW EXECUTE FUNCTION test_reference_delivery_failure()',
+    );
+    installed = true;
+    await assert.rejects(f.recheck());
+    assert.equal(
+      (await db.payPalCheckout.findUniqueOrThrow({ where: { id: f.p.id } }))
+        .status,
+      "VERIFIED",
+    );
+    assert.equal(
+      await db.payPalTransferReceipt.count({ where: { checkoutId: f.p.id } }),
+      1,
+    );
+    assert.equal(
+      await db.keyAssignment.count({ where: { productId: f.product.id } }),
+      0,
+    );
+    assert.equal(
+      await db.order.count({ where: { paypalCheckoutId: f.p.id } }),
+      0,
+    );
+    await admin.query(
+      'DROP TRIGGER test_reference_delivery_failure ON "KeyAssignment"',
+    );
+    installed = false;
+    assert.equal((await f.recheck()).status, "FULFILLED");
+    assert.equal(f.state.calls, 1);
+  } finally {
+    if (installed)
+      await admin.query(
+        'DROP TRIGGER test_reference_delivery_failure ON "KeyAssignment"',
+      );
+    await admin.query(
+      "DROP FUNCTION IF EXISTS test_reference_delivery_failure()",
+    );
+    await db.$disconnect();
+  }
+});
+test("concurrent reference checks fulfill one order with distinct keys only once", async () => {
+  const db = authenticationDatabase(),
+    other = authenticationDatabase();
+  try {
+    const f = await transferFixture(db);
+    f.state.received = true;
+    await Promise.allSettled([
+      reconcilePayPal(db, f.user.id, f.p.id, f.options),
+      reconcilePayPal(other, f.user.id, f.p.id, f.options),
+    ]);
+    assert.equal(
+      await db.order.count({ where: { paypalCheckoutId: f.p.id } }),
+      1,
+    );
+    assert.equal(
+      await db.payPalTransferReceipt.count({ where: { checkoutId: f.p.id } }),
+      1,
+    );
+    assert.equal(
+      await db.keyAssignment.count({ where: { productId: f.product.id } }),
+      2,
+    );
+  } finally {
+    await db.$disconnect();
+    await other.$disconnect();
+  }
+});

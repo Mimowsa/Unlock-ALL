@@ -106,9 +106,7 @@ export function Checkout() {
                 : "paypalUnavailable") as CopyKey,
           };
         } else {
-          if (body.checkout.approvalUrl)
-            window.location.assign(body.checkout.approvalUrl);
-          else router.push(href(`commande/paypal/${body.checkout.id}`));
+          router.push(href(`commande/paypal/${body.checkout.id}`));
           return;
         }
       } else result = await checkout(attempt.current);

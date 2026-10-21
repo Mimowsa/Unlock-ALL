@@ -1,0 +1,519 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Locale {
+  FR
+  EN
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PublicationStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum OrderMode {
+  DEMO
+  COMMERCIAL
+}
+
+enum OrderStatus {
+  CREATING
+  VALIDATED
+  ASSIGNING
+  DELIVERING
+  COMPLETED
+  FAILED
+  NEEDS_ATTENTION
+}
+
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum OrderEventType {
+  CREATED
+  VALIDATED
+  KEYS_ASSIGNED
+  DELIVERED
+  FAILED
+  INTERVENTION_REQUESTED
+  EMAIL_FAILED
+}
+
+enum EmailKind {
+  WELCOME
+  ORDER_CONFIRMATION
+  KEY_DELIVERY
+  PASSWORD_RESET
+}
+
+enum EmailStatus {
+  PENDING
+  PROCESSING
+  SENT
+  RETRY
+  FAILED
+}
+
+model User {
+  id              String               @id @default(cuid())
+  email           String               @unique @db.VarChar(254)
+  emailVerified   DateTime?            @db.Timestamptz(3)
+  name            String?              @db.VarChar(80)
+  image           String?
+  passwordHash    String?              @db.Text
+  discordUsername String?              @db.VarChar(32)
+  role            Role                 @default(USER)
+  active          Boolean              @default(true)
+  isDemo          Boolean              @default(false)
+  locale          Locale               @default(FR)
+  sessionVersion  Int                  @default(0)
+  createdAt       DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(3)
+  accounts        Account[]
+  sessions        Session[]
+  passwordResets  PasswordResetToken[]
+  orders          Order[]
+  paypalCheckouts PayPalCheckout[]
+  cart            Cart?
+  emailJobs       EmailJob[]
+  auditLogs       AuditLog[]
+
+  @@index([role, active])
+  @@index([createdAt])
+}
+
+// Conventional Auth.js adapter models, reserved for phase 4.
+// Credentials sessions may use JWTs without populating Account/Session.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime @db.Timestamptz(3)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expires])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime @db.Timestamptz(3)
+
+  @@unique([identifier, token])
+  @@index([expires])
+}
+
+model PasswordResetToken {
+  emailJobs EmailJob[]
+  id        String     @id @default(cuid())
+  userId    String
+  tokenHash String     @unique @db.Char(64)
+  expiresAt DateTime   @db.Timestamptz(3)
+  usedAt    DateTime?  @db.Timestamptz(3)
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Category {
+  id           String                @id @default(cuid())
+  slug         String                @unique
+  translations CategoryTranslation[]
+  products     Product[]
+}
+
+model CategoryTranslation {
+  categoryId String
+  locale     Locale
+  name       String   @db.VarChar(100)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([categoryId, locale])
+}
+
+model Game {
+  id       String    @id @default(cuid())
+  slug     String    @unique
+  name     String    @db.VarChar(100)
+  products Product[]
+}
+
+model Platform {
+  id       String    @id @default(cuid())
+  slug     String    @unique
+  name     String    @db.VarChar(100)
+  products Product[]
+}
+
+model Product {
+  id           String               @id @default(cuid())
+  slug         String               @unique
+  priceCents   Int
+  currency     String               @default("EUR") @db.Char(3)
+  status       PublicationStatus    @default(DRAFT)
+  isDemo       Boolean              @default(true)
+  downloadUrl  String?
+  categoryId   String
+  gameId       String
+  platformId   String
+  createdAt    DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime             @updatedAt @db.Timestamptz(3)
+  category     Category             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  game         Game                 @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  platform     Platform             @relation(fields: [platformId], references: [id], onDelete: Restrict)
+  translations ProductTranslation[]
+  images       ProductImage[]
+  keys         ActivationKey[]
+  orderItems   OrderItem[]
+  cartItems    CartItem[]
+
+  @@index([status, gameId, platformId])
+  @@index([categoryId, status])
+  @@index([platformId])
+}
+
+model ProductTranslation {
+  productId        String
+  locale           Locale
+  slug             String
+  name             String  @db.VarChar(150)
+  shortDescription String  @db.VarChar(500)
+  description      String  @db.Text
+  product          Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([productId, locale])
+  @@unique([locale, slug])
+}
+
+model ProductImage {
+  id           String                    @id @default(cuid())
+  productId    String
+  url          String
+  position     Int                       @default(0)
+  product      Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  translations ProductImageTranslation[]
+
+  @@unique([productId, position])
+}
+
+model ProductImageTranslation {
+  imageId String
+  locale  Locale
+  alt     String       @db.VarChar(250)
+  image   ProductImage @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  @@id([imageId, locale])
+}
+
+// Availability = disabledAt IS NULL and no KeyAssignment. No editable stock counter.
+model ActivationKey {
+  id              String          @id @default(cuid())
+  productId       String
+  ciphertext      String          @db.Text
+  fingerprint     String          @unique @db.Char(64)
+  encryptionKeyId String          @db.VarChar(40)
+  isDemo          Boolean         @default(true)
+  disabledAt      DateTime?       @db.Timestamptz(3)
+  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  reservation     KeyReservation?
+  assignment      KeyAssignment?
+
+  @@unique([id, productId])
+  @@index([productId, disabledAt, createdAt, id])
+}
+
+model Cart {
+  id             String     @id @default(cuid())
+  userId         String?    @unique
+  guestTokenHash String?    @unique @db.Char(64)
+  expiresAt      DateTime?  @db.Timestamptz(3)
+  revision       Int        @default(0)
+  updatedAt      DateTime   @updatedAt @db.Timestamptz(3)
+  user           User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items          CartItem[]
+
+  @@index([expiresAt])
+}
+
+model CartItem {
+  cartId    String
+  productId String
+  quantity  Int
+  cart      Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@id([cartId, productId])
+  @@index([productId])
+}
+
+model Order {
+  id               String          @id @default(cuid())
+  reference        String          @unique
+  userId           String
+  idempotencyKey   String
+  requestHash      String          @db.Char(64)
+  mode             OrderMode       @default(DEMO)
+  status           OrderStatus     @default(CREATING)
+  paymentStatus    PaymentStatus   @default(NOT_REQUIRED)
+  currency         String          @default("EUR") @db.Char(3)
+  subtotalCents    BigInt          @default(0)
+  totalCents       BigInt          @default(0)
+  locale           Locale          @default(FR)
+  customerEmail    String          @db.VarChar(254)
+  discordUsername  String          @db.VarChar(32)
+  failureCode      String?
+  completedAt      DateTime?       @db.Timestamptz(3)
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+  user             User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items            OrderItem[]
+  events           OrderEvent[]
+  emailJobs        EmailJob[]
+  paymentProvider  String          @default("SIMULATION")
+  paypalCheckoutId String?         @unique
+  paypalCheckout   PayPalCheckout? @relation(fields: [paypalCheckoutId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, idempotencyKey])
+  @@unique([id, userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id             String          @id @default(cuid())
+  orderId        String
+  productId      String
+  productNameFr  String          @db.VarChar(150)
+  productNameEn  String          @db.VarChar(150)
+  platformName   String          @db.VarChar(100)
+  gameName       String          @db.VarChar(100)
+  unitPriceCents Int
+  quantity       Int
+  lineTotalCents BigInt
+  downloadUrl    String?
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  assignments    KeyAssignment[]
+
+  @@unique([id, productId])
+  @@unique([orderId, productId])
+  @@index([productId])
+}
+
+model KeyAssignment {
+  keyId       String        @id
+  productId   String
+  orderItemId String
+  unitIndex   Int
+  assignedAt  DateTime      @default(now()) @db.Timestamptz(3)
+  key         ActivationKey @relation(fields: [keyId, productId], references: [id, productId], onDelete: Restrict)
+  orderItem   OrderItem     @relation(fields: [orderItemId, productId], references: [id, productId], onDelete: Restrict)
+
+  @@unique([keyId, productId])
+  @@unique([orderItemId, unitIndex])
+  @@index([productId])
+}
+
+model OrderEvent {
+  id        String         @id @default(cuid())
+  orderId   String
+  type      OrderEventType
+  details   Json?
+  createdAt DateTime       @default(now()) @db.Timestamptz(3)
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+}
+
+// Outbox references business records. Frozen provider payloads are encrypted and cleared on success.
+model EmailJob {
+  id                String              @id @default(cuid())
+  idempotencyKey    String              @unique
+  userId            String
+  orderId           String?
+  kind              EmailKind
+  locale            Locale              @default(FR)
+  status            EmailStatus         @default(PENDING)
+  attempts          Int                 @default(0)
+  maxAttempts       Int                 @default(5)
+  nextAttemptAt     DateTime            @default(now()) @db.Timestamptz(3)
+  lockedUntil       DateTime?           @db.Timestamptz(3)
+  sentAt            DateTime?           @db.Timestamptz(3)
+  recipient         String              @db.VarChar(254)
+  firstAttemptAt    DateTime?           @db.Timestamptz(3)
+  lockToken         String?
+  payloadCiphertext String?             @db.Text
+  payloadKeyId      String?
+  resetTokenId      String?
+  resetToken        PasswordResetToken? @relation(fields: [resetTokenId], references: [id], onDelete: SetNull)
+  providerMessageId String?
+  lastErrorCode     String?
+  createdAt         DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime            @updatedAt @db.Timestamptz(3)
+  user              User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order             Order?              @relation(fields: [orderId, userId], references: [id, userId], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+  @@index([orderId])
+  @@index([userId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String   @db.VarChar(100)
+  entityType String   @db.VarChar(100)
+  entityId   String
+  details    Json?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model SiteSetting {
+  id          String   @id @default("site")
+  demoEnabled Boolean  @default(false)
+  discordUrl  String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model AuthRateLimit {
+  key       String   @id @db.Char(64)
+  hits      Int
+  expiresAt DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+model AuthSecurityState {
+  id       String @id
+  revision BigInt @default(0)
+}
+
+model EmailWorkerLease {
+  id          String    @id
+  token       String?
+  lockedUntil DateTime? @db.Timestamptz(3)
+}
+
+model PayPalMerchant {
+  id                    String               @id @default(uuid())
+  label                 String               @db.VarChar(100)
+  merchantId            String               @db.VarChar(100)
+  clientId              String               @db.Text
+  credentialsCiphertext String               @db.Text
+  encryptionKeyId       String
+  fingerprint           String               @unique @db.Char(64)
+  environment           String               @default("sandbox")
+  webhookId             String?
+  createdAt             DateTime             @default(now()) @db.Timestamptz(3)
+  retiredAt             DateTime?            @db.Timestamptz(3)
+  checkouts             PayPalCheckout[]
+  setting               PayPalSetting?
+  events                PayPalWebhookEvent[]
+}
+
+model PayPalSetting {
+  id               String         @id @default("site")
+  activeMerchantId String         @unique
+  activeMerchant   PayPalMerchant @relation(fields: [activeMerchantId], references: [id], onDelete: Restrict)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
+}
+
+model PayPalCheckout {
+  id               String           @id @default(uuid())
+  userId           String
+  merchantId       String
+  idempotencyKey   String
+  requestHash      String           @db.Char(64)
+  status           String           @default("CREATING")
+  amountCents      BigInt
+  currency         String           @default("EUR")
+  locale           Locale
+  discordUsername  String
+  customerEmail    String
+  cartRevision     Int
+  cartFingerprint  String           @db.Char(64)
+  snapshot         Json
+  requestBody      Json
+  paypalOrderId    String?          @unique
+  captureId        String?          @unique
+  approvalUrl      String?
+  errorCode        String?
+  leaseToken       String?
+  leaseUntil       DateTime?        @db.Timestamptz(3)
+  captureStartedAt DateTime?        @db.Timestamptz(3)
+  expiresAt        DateTime         @db.Timestamptz(3)
+  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @db.Timestamptz(3)
+  user             User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  merchant         PayPalMerchant   @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  order            Order?
+  reservations     KeyReservation[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, expiresAt])
+}
+
+model KeyReservation {
+  keyId      String         @id
+  checkoutId String
+  productId  String
+  unitIndex  Int
+  key        ActivationKey  @relation(fields: [keyId], references: [id], onDelete: Restrict)
+  checkout   PayPalCheckout @relation(fields: [checkoutId], references: [id], onDelete: Restrict)
+
+  @@unique([checkoutId, productId, unitIndex])
+}
+
+model PayPalWebhookEvent {
+  id            String         @id
+  merchantId    String
+  eventType     String
+  paypalOrderId String?
+  processedAt   DateTime?      @db.Timestamptz(3)
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  merchant      PayPalMerchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+}

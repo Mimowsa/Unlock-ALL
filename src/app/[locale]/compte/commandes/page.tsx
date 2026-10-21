@@ -1,0 +1,16 @@
+import { Account } from "@/features/account/account";
+import { ProtectedDemoPage } from "@/components/protected-demo-page";
+import { pageMetadata } from "@/i18n/metadata";
+export const generateMetadata = pageMetadata("orders");
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const { locale } = await params;
+  return (
+    <ProtectedDemoPage locale={locale} next="compte">
+      <Account orders />
+    </ProtectedDemoPage>
+  );
+}

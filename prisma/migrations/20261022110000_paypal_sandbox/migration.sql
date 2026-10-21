@@ -1,0 +1,44 @@
+CREATE TABLE "PayPalMerchant" (
+ "id" text PRIMARY KEY,"label" varchar(100) NOT NULL,"merchantId" varchar(100) NOT NULL,"clientId" text NOT NULL,"credentialsCiphertext" text NOT NULL,"encryptionKeyId" text NOT NULL,"fingerprint" char(64) NOT NULL UNIQUE,"environment" text NOT NULL DEFAULT 'sandbox',"webhookId" text,"createdAt" timestamptz(3) NOT NULL DEFAULT now(),"retiredAt" timestamptz(3),CHECK ("environment"='sandbox')
+);
+CREATE TABLE "PayPalSetting" ("id" text PRIMARY KEY DEFAULT 'site',"activeMerchantId" text NOT NULL UNIQUE REFERENCES "PayPalMerchant"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"updatedAt" timestamptz(3) NOT NULL,CHECK("id"='site'));
+CREATE TABLE "PayPalCheckout" (
+ "id" text PRIMARY KEY,"userId" text NOT NULL REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"merchantId" text NOT NULL REFERENCES "PayPalMerchant"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"idempotencyKey" text NOT NULL,"requestHash" char(64) NOT NULL,"status" text NOT NULL DEFAULT 'CREATING',"amountCents" bigint NOT NULL,"currency" text NOT NULL DEFAULT 'EUR',"locale" "Locale" NOT NULL,"discordUsername" text NOT NULL,"customerEmail" text NOT NULL,"cartRevision" integer NOT NULL,"cartFingerprint" char(64) NOT NULL,"snapshot" jsonb NOT NULL,"requestBody" jsonb NOT NULL,"paypalOrderId" text UNIQUE,"captureId" text UNIQUE,"approvalUrl" text,"errorCode" text,"leaseToken" text,"leaseUntil" timestamptz(3),"captureStartedAt" timestamptz(3),"expiresAt" timestamptz(3) NOT NULL,"createdAt" timestamptz(3) NOT NULL DEFAULT now(),"updatedAt" timestamptz(3) NOT NULL,
+ UNIQUE("userId","idempotencyKey"),CHECK("amountCents">0 AND "currency"='EUR'),CHECK("status" IN ('CREATING','APPROVAL_PENDING','CAPTURING','VERIFIED','FULFILLED','CANCELED','EXPIRED','DECLINED','NEEDS_REVIEW','REFUNDED','PARTIALLY_REFUNDED','REVERSED')),CHECK(jsonb_typeof("snapshot")='array')
+);
+CREATE INDEX "PayPalCheckout_status_expiresAt_idx" ON "PayPalCheckout"("status","expiresAt");
+CREATE TABLE "KeyReservation" ("keyId" text PRIMARY KEY REFERENCES "ActivationKey"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"checkoutId" text NOT NULL REFERENCES "PayPalCheckout"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"productId" text NOT NULL,"unitIndex" integer NOT NULL CHECK("unitIndex">0),UNIQUE("checkoutId","productId","unitIndex"));
+CREATE TABLE "PayPalWebhookEvent" ("id" text PRIMARY KEY,"merchantId" text NOT NULL REFERENCES "PayPalMerchant"("id") ON DELETE RESTRICT ON UPDATE CASCADE,"eventType" text NOT NULL,"paypalOrderId" text,"processedAt" timestamptz(3),"createdAt" timestamptz(3) NOT NULL DEFAULT now());
+ALTER TABLE "Order" ADD COLUMN "paymentProvider" text NOT NULL DEFAULT 'SIMULATION', ADD COLUMN "paypalCheckoutId" text UNIQUE REFERENCES "PayPalCheckout"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Order" DROP CONSTRAINT "Order_payment_mode";
+ALTER TABLE "Order" ADD CONSTRAINT "Order_payment_mode" CHECK (("mode"='DEMO' AND (("paymentProvider"='SIMULATION' AND "paymentStatus"='NOT_REQUIRED' AND "paypalCheckoutId" IS NULL) OR ("paymentProvider"='PAYPAL_SANDBOX' AND "paymentStatus"='VERIFIED' AND "paypalCheckoutId" IS NOT NULL))) OR ("mode"='COMMERCIAL' AND "paymentStatus"<>'NOT_REQUIRED' AND "paymentProvider"<>'PAYPAL_SANDBOX'));
+CREATE FUNCTION guard_paypal_identity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF (NEW."id",NEW."userId",NEW."merchantId",NEW."idempotencyKey",NEW."requestHash",NEW."amountCents",NEW."currency",NEW."locale",NEW."discordUsername",NEW."customerEmail",NEW."cartRevision",NEW."cartFingerprint",NEW."snapshot",NEW."requestBody",NEW."expiresAt") IS DISTINCT FROM (OLD."id",OLD."userId",OLD."merchantId",OLD."idempotencyKey",OLD."requestHash",OLD."amountCents",OLD."currency",OLD."locale",OLD."discordUsername",OLD."customerEmail",OLD."cartRevision",OLD."cartFingerprint",OLD."snapshot",OLD."requestBody",OLD."expiresAt") THEN RAISE EXCEPTION 'PayPal checkout identity and snapshots are immutable' USING ERRCODE='23514'; END IF;
+ IF OLD."paypalOrderId" IS NOT NULL AND NEW."paypalOrderId" IS DISTINCT FROM OLD."paypalOrderId" OR OLD."captureId" IS NOT NULL AND NEW."captureId" IS DISTINCT FROM OLD."captureId" THEN RAISE EXCEPTION 'PayPal references are immutable' USING ERRCODE='23514'; END IF;
+ IF OLD."status" IN ('FULFILLED','REFUNDED','PARTIALLY_REFUNDED','REVERSED') AND NEW."status" NOT IN ('FULFILLED','REFUNDED','PARTIALLY_REFUNDED','REVERSED') THEN RAISE EXCEPTION 'Fulfilled payments cannot return to checkout' USING ERRCODE='23514'; END IF;
+ RETURN NEW; END $$;
+CREATE TRIGGER "PayPalCheckout_identity_guard" BEFORE UPDATE ON "PayPalCheckout" FOR EACH ROW EXECUTE FUNCTION guard_paypal_identity();
+CREATE FUNCTION guard_paypal_merchant() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF (NEW."id",NEW."merchantId",NEW."clientId",NEW."credentialsCiphertext",NEW."encryptionKeyId",NEW."fingerprint",NEW."environment") IS DISTINCT FROM (OLD."id",OLD."merchantId",OLD."clientId",OLD."credentialsCiphertext",OLD."encryptionKeyId",OLD."fingerprint",OLD."environment") THEN RAISE EXCEPTION 'Merchant credentials are versioned and immutable' USING ERRCODE='23514'; END IF; RETURN NEW; END $$;
+CREATE TRIGGER "PayPalMerchant_identity_guard" BEFORE UPDATE ON "PayPalMerchant" FOR EACH ROW EXECUTE FUNCTION guard_paypal_merchant();
+CREATE FUNCTION guard_key_reservation() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE k "ActivationKey"%ROWTYPE; BEGIN
+ IF TG_OP='INSERT' THEN
+  SELECT * INTO k FROM "ActivationKey" WHERE "id"=NEW."keyId" FOR UPDATE;
+  IF NOT FOUND OR k."disabledAt" IS NOT NULL OR NOT k."isDemo" OR k."productId"<>NEW."productId" OR EXISTS(SELECT 1 FROM "KeyAssignment" WHERE "keyId"=NEW."keyId") THEN RAISE EXCEPTION 'Key unavailable for reservation' USING ERRCODE='23514'; END IF;
+  RETURN NEW;
+ ELSIF TG_OP='UPDATE' THEN RAISE EXCEPTION 'Reservations are immutable' USING ERRCODE='23514';
+ ELSE
+  IF NOT EXISTS(SELECT 1 FROM "PayPalCheckout" WHERE "id"=OLD."checkoutId" AND "status" IN ('CANCELED','EXPIRED','DECLINED','FULFILLED','REFUNDED','REVERSED')) THEN RAISE EXCEPTION 'Payment reservations cannot be released while unresolved' USING ERRCODE='23514'; END IF; RETURN OLD;
+ END IF; END $$;
+CREATE TRIGGER "KeyReservation_guard" BEFORE INSERT OR UPDATE OR DELETE ON "KeyReservation" FOR EACH ROW EXECUTE FUNCTION guard_key_reservation();
+CREATE FUNCTION guard_reserved_assignment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF EXISTS(SELECT 1 FROM "OrderItem" i JOIN "Order" o ON o."id"=i."orderId" WHERE i."id"=NEW."orderItemId" AND o."paymentProvider"='PAYPAL_SANDBOX' AND NOT EXISTS(SELECT 1 FROM "KeyReservation" r WHERE r."keyId"=NEW."keyId" AND r."checkoutId"=o."paypalCheckoutId" AND r."unitIndex"=NEW."unitIndex")) THEN RAISE EXCEPTION 'PayPal delivery requires its own reservation' USING ERRCODE='23514'; END IF;
+ IF EXISTS(SELECT 1 FROM "KeyReservation" r JOIN "OrderItem" i ON i."id"=NEW."orderItemId" JOIN "Order" o ON o."id"=i."orderId" WHERE r."keyId"=NEW."keyId" AND (o."paypalCheckoutId" IS DISTINCT FROM r."checkoutId" OR r."unitIndex"<>NEW."unitIndex")) THEN RAISE EXCEPTION 'Key reserved for another payment' USING ERRCODE='23514'; END IF; RETURN NEW; END $$;
+CREATE TRIGGER "KeyAssignment_paypal_guard" BEFORE INSERT ON "KeyAssignment" FOR EACH ROW EXECUTE FUNCTION guard_reserved_assignment();
+CREATE FUNCTION guard_reserved_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF EXISTS(SELECT 1 FROM "KeyReservation" WHERE "keyId"=OLD."id") AND (NEW."productId",NEW."ciphertext",NEW."fingerprint",NEW."encryptionKeyId",NEW."isDemo",NEW."disabledAt") IS DISTINCT FROM (OLD."productId",OLD."ciphertext",OLD."fingerprint",OLD."encryptionKeyId",OLD."isDemo",OLD."disabledAt") THEN RAISE EXCEPTION 'Reserved keys cannot be changed' USING ERRCODE='23514'; END IF; RETURN NEW; END $$;
+CREATE TRIGGER "ActivationKey_reserved_guard" BEFORE UPDATE ON "ActivationKey" FOR EACH ROW EXECUTE FUNCTION guard_reserved_key();
+CREATE FUNCTION guard_paypal_order() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF TG_OP='UPDATE' AND (NEW."paymentProvider",NEW."paypalCheckoutId") IS DISTINCT FROM (OLD."paymentProvider",OLD."paypalCheckoutId") THEN RAISE EXCEPTION 'Order payment source is immutable' USING ERRCODE='23514'; END IF;
+ IF NEW."paymentProvider"='PAYPAL_SANDBOX' AND NOT EXISTS(SELECT 1 FROM "PayPalCheckout" p WHERE p."id"=NEW."paypalCheckoutId" AND p."userId"=NEW."userId" AND p."amountCents"=NEW."totalCents" AND p."currency"=NEW."currency" AND p."captureId" IS NOT NULL AND p."status" IN ('VERIFIED','FULFILLED','REFUNDED','PARTIALLY_REFUNDED','REVERSED')) THEN RAISE EXCEPTION 'PayPal capture must be verified before fulfillment' USING ERRCODE='23514'; END IF; RETURN NEW; END $$;
+CREATE TRIGGER "Order_paypal_guard" BEFORE INSERT OR UPDATE ON "Order" FOR EACH ROW EXECUTE FUNCTION guard_paypal_order();
